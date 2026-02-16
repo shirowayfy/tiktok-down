@@ -1,0 +1,4 @@
+aiogram>=3.0,<4.0
+aiohttp-socks
+yt-dlp
+python-dotenv
