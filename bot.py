@@ -45,8 +45,11 @@ MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MB Telegram limit
 
 def load_users() -> set[str]:
     if os.path.exists(USERS_FILE):
-        with open(USERS_FILE) as f:
-            return set(json.load(f))
+        try:
+            with open(USERS_FILE) as f:
+                return set(json.load(f))
+        except (json.JSONDecodeError, ValueError):
+            log.warning("Corrupted users.json, starting fresh")
     return set()
 
 
@@ -88,7 +91,7 @@ async def cmd_admin(message: Message):
 @dp.callback_query(F.data == "add_user", F.from_user.id == ADMIN_ID)
 async def cb_add_user(callback: CallbackQuery, state: FSMContext):
     await state.set_state(AddUser.waiting_for_username)
-    await state.update_data(action="add")
+    await state.update_data(action="add", prompt_msg_id=callback.message.message_id)
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Отмена", callback_data="cancel")],
     ])
@@ -103,7 +106,7 @@ async def cb_remove_user(callback: CallbackQuery, state: FSMContext):
         await callback.answer()
         return
     await state.set_state(AddUser.waiting_for_username)
-    await state.update_data(action="remove")
+    await state.update_data(action="remove", prompt_msg_id=callback.message.message_id)
     lines = [f"• @{u}" for u in sorted(allowed_users)]
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Отмена", callback_data="cancel")],
@@ -137,6 +140,7 @@ async def cb_cancel(callback: CallbackQuery, state: FSMContext):
 async def process_username(message: Message, state: FSMContext):
     data = await state.get_data()
     action = data.get("action", "add")
+    prompt_msg_id = data.get("prompt_msg_id")
 
     username = message.text.strip().lstrip("@").lower()
     if not username:
@@ -160,6 +164,8 @@ async def process_username(message: Message, state: FSMContext):
             log.info("Admin added user @%s", username)
             await message.answer(f"Пользователь @{username} добавлен.")
 
+    if prompt_msg_id:
+        await bot.delete_message(message.chat.id, prompt_msg_id)
     await state.clear()
 
 
