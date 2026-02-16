@@ -43,36 +43,36 @@ MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MB Telegram limit
 
 # --- User storage ---
 
-def load_users() -> set[int]:
+def load_users() -> set[str]:
     if os.path.exists(USERS_FILE):
         with open(USERS_FILE) as f:
             return set(json.load(f))
     return set()
 
 
-def save_users(users: set[int]):
+def save_users(users: set[str]):
     with open(USERS_FILE, "w") as f:
-        json.dump(list(users), f)
+        json.dump(sorted(users), f)
 
 
 allowed_users = load_users()
 
 
-def is_allowed(user_id: int) -> bool:
-    return user_id == ADMIN_ID or user_id in allowed_users
+def is_allowed(user_id: int, username: str | None) -> bool:
+    if user_id == ADMIN_ID:
+        return True
+    if username and username.lower() in allowed_users:
+        return True
+    return False
 
 
 # --- FSM for adding user ---
 
 class AddUser(StatesGroup):
-    waiting_for_id = State()
+    waiting_for_username = State()
 
 
-# --- Access check ---
-
-@dp.message(~F.from_user.id.in_({ADMIN_ID}) & ~F.from_user.id.in_(allowed_users), F.text == "/admin")
-async def no_access_admin(message: Message):
-    await message.answer("Нет доступа.")
+# --- Admin panel ---
 
 
 @dp.message(F.text == "/admin", F.from_user.id == ADMIN_ID)
@@ -87,12 +87,12 @@ async def cmd_admin(message: Message):
 
 @dp.callback_query(F.data == "add_user", F.from_user.id == ADMIN_ID)
 async def cb_add_user(callback: CallbackQuery, state: FSMContext):
-    await state.set_state(AddUser.waiting_for_id)
+    await state.set_state(AddUser.waiting_for_username)
     await state.update_data(action="add")
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Отмена", callback_data="cancel")],
     ])
-    await callback.message.edit_text("Введи ID пользователя:\n\nПример: 714284843", reply_markup=kb)
+    await callback.message.edit_text("Введи username пользователя:\n\nПример: @Soln_z", reply_markup=kb)
     await callback.answer()
 
 
@@ -102,12 +102,16 @@ async def cb_remove_user(callback: CallbackQuery, state: FSMContext):
         await callback.message.edit_text("Список пользователей пуст.")
         await callback.answer()
         return
-    await state.set_state(AddUser.waiting_for_id)
+    await state.set_state(AddUser.waiting_for_username)
     await state.update_data(action="remove")
+    lines = [f"• @{u}" for u in sorted(allowed_users)]
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Отмена", callback_data="cancel")],
     ])
-    await callback.message.edit_text("Введи ID пользователя для удаления:\n\nПример: 714284843", reply_markup=kb)
+    await callback.message.edit_text(
+        "Введи username для удаления:\n\n" + "\n".join(lines),
+        reply_markup=kb,
+    )
     await callback.answer()
 
 
@@ -116,7 +120,7 @@ async def cb_list_users(callback: CallbackQuery):
     if not allowed_users:
         text = "Список пользователей пуст."
     else:
-        lines = [f"• {uid}" for uid in sorted(allowed_users)]
+        lines = [f"• @{u}" for u in sorted(allowed_users)]
         text = "Пользователи:\n" + "\n".join(lines)
     await callback.message.edit_text(text)
     await callback.answer()
@@ -129,34 +133,32 @@ async def cb_cancel(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
-@dp.message(AddUser.waiting_for_id, F.from_user.id == ADMIN_ID)
-async def process_user_id(message: Message, state: FSMContext):
+@dp.message(AddUser.waiting_for_username, F.from_user.id == ADMIN_ID)
+async def process_username(message: Message, state: FSMContext):
     data = await state.get_data()
     action = data.get("action", "add")
 
-    text = message.text.strip()
-    if not text.isdigit():
-        await message.answer("Это не похоже на ID. Введи числовой ID или нажми Отмена.")
+    username = message.text.strip().lstrip("@").lower()
+    if not username:
+        await message.answer("Введи username или нажми Отмена.")
         return
 
-    user_id = int(text)
-
     if action == "remove":
-        if user_id in allowed_users:
-            allowed_users.discard(user_id)
+        if username in allowed_users:
+            allowed_users.discard(username)
             save_users(allowed_users)
-            log.info("Admin removed user %s", user_id)
-            await message.answer(f"Пользователь {user_id} удалён.")
+            log.info("Admin removed user @%s", username)
+            await message.answer(f"Пользователь @{username} удалён.")
         else:
-            await message.answer(f"Пользователь {user_id} не найден в списке.")
+            await message.answer(f"Пользователь @{username} не найден в списке.")
     else:
-        if user_id in allowed_users:
-            await message.answer(f"Пользователь {user_id} уже добавлен.")
+        if username in allowed_users:
+            await message.answer(f"Пользователь @{username} уже добавлен.")
         else:
-            allowed_users.add(user_id)
+            allowed_users.add(username)
             save_users(allowed_users)
-            log.info("Admin added user %s", user_id)
-            await message.answer(f"Пользователь {user_id} добавлен.")
+            log.info("Admin added user @%s", username)
+            await message.answer(f"Пользователь @{username} добавлен.")
 
     await state.clear()
 
@@ -165,9 +167,9 @@ async def process_user_id(message: Message, state: FSMContext):
 
 @dp.message(F.text == "/start")
 async def cmd_start(message: Message):
-    if not is_allowed(message.from_user.id):
-        log.info("Unauthorized user %s tried /start", message.from_user.id)
-        await message.answer(f"Нет доступа. Обратись к администратору.\n\nТвой ID: {message.from_user.id}")
+    if not is_allowed(message.from_user.id, message.from_user.username):
+        log.info("Unauthorized user %s (@%s) tried /start", message.from_user.id, message.from_user.username)
+        await message.answer("Нет доступа. Обратись к администратору.")
         return
     log.info("User %s sent /start", message.from_user.id)
     await message.answer(
@@ -177,9 +179,9 @@ async def cmd_start(message: Message):
 
 @dp.message(F.text.regexp(TIKTOK_REGEX))
 async def handle_tiktok_link(message: Message):
-    if not is_allowed(message.from_user.id):
-        log.info("Unauthorized user %s tried to download", message.from_user.id)
-        await message.answer(f"Нет доступа. Обратись к администратору.\n\nТвой ID: {message.from_user.id}")
+    if not is_allowed(message.from_user.id, message.from_user.username):
+        log.info("Unauthorized user %s (@%s) tried to download", message.from_user.id, message.from_user.username)
+        await message.answer("Нет доступа. Обратись к администратору.")
         return
 
     url_match = TIKTOK_REGEX.search(message.text)
